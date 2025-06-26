@@ -2,12 +2,13 @@ import os
 import cv2
 import numpy as np
 import sys
+import pickle
 
 labeldict = {chr(ord('A') + i): i for i in range(26)} # temp for handsign dataset
 # create a standart for keeping these kinds of data OUTSIDE of the source code
-learning_rate=0.005
-num_kernels=8
-num_layers=1
+learning_rate=0.003
+num_kernels=4
+num_layers=2
 # num layer 2 
 # num kernel 2
 # or the value for exponantial growth with how many times it is exp grown
@@ -21,12 +22,18 @@ val_folder = "dataset"
 input_folder = "dataset"
 label_folder = "label"
 read_mode=0
-kernels = [
-    [[np.random.randn(kernel_size, kernel_size) * np.sqrt(2 / (kernel_size * kernel_size))
-      for _ in range(num_kernels)] for _ in range(num_kernels if l > 0 else 1)]
-    for l in range(num_layers)
-]
-gam = [ 
+kernels = []
+in_channels = 1
+for l in range(num_layers):
+    out_channels = num_kernels * (num_kernels ** l)
+    kernels.append([
+        [np.random.randn(kernel_size, kernel_size) * np.sqrt(2 / (kernel_size * kernel_size))
+         for _ in range(out_channels)]
+        for _ in range(in_channels)
+    ])
+    in_channels = out_channels
+
+"""gam = [ 
     [[np.full((kernel_size, kernel_size), 1) * np.sqrt(2 / (kernel_size * kernel_size)) 
        for _ in range(num_kernels)] for _ in range(num_kernels if l > 0 else 1)]
     for l in range (num_layers)
@@ -36,17 +43,13 @@ beta = [
         for _ in range(num_kernels)] for _ in range(num_kernels if l > 0 else 1)]
     for l in range (num_layers)
 ]
-
+"""
 def calc_output_size(image_size, num_layers, kernel_size, pool_size):
     size = image_size
     for _ in range(num_layers):
         size = (size - kernel_size + 1) // pool_size
     return size
-cache_batch = [] 
-finmap = calc_output_size(image_size, num_layers, kernel_size, pool_size)
-densein = num_kernels * (finmap*finmap)
-weights = np.random.randn(len(labeldict), densein) * np.sqrt(2 / densein) * learning_rate
-bias = np.zeros(len(labeldict)) * learning_rate
+
 
 def relu(x): return np.maximum(0, x)
 
@@ -93,7 +96,7 @@ def maxpool_backward(dout, img, size): # not even the real backward? keep track 
     return out, cache
 
 def batch_norm_backw(x, gam, beta, eps = 1e-5):
-        
+    ADD IT LATEERR        
 
 """
 def softmax(x):
@@ -116,19 +119,20 @@ def kernel_learn(kernel, inp, dfeature): # there must be a more stabile way
     kernel -= learning_rate * grad
     return dinput
 
-def forward_pass(img): # TODO: batchnorm for layers is NEEDED
+def forward_pass(img):
     inputs = [[img]]
     for l in range(num_layers):
         prev_maps = inputs[-1]
+        in_channels = len(prev_maps)
+        out_channels = len(kernels[l][0])
         new_maps = []
-        for k in range(num_kernels):
+        for out_k in range(out_channels):
             acc = None
-            for m_idx, prev in enumerate(prev_maps):
-                conv = convolve(prev, kernels[l][m_idx][k])
-                #conv = batch_norm_dense(conv, gam, beta, 1e-e)
+            for in_k in range(in_channels):
+                conv = convolve(prev_maps[in_k], kernels[l][in_k][out_k])
                 if acc is None:
-                    acc=conv 
-                else: 
+                    acc = conv
+                else:
                     acc += conv
             act = relu(acc)
             pooled = maxpool(act, pool_size)
@@ -136,23 +140,34 @@ def forward_pass(img): # TODO: batchnorm for layers is NEEDED
         inputs.append(new_maps)
     return inputs
 
-def backward_pass(inputs, doutput, original_img): #again, batchnorm
+def backward_pass(inputs, doutput, original_img):
     next_grads = doutput
     for l in reversed(range(num_layers)):
-        new_grads = [np.zeros_like(inputs[l][i]) for i in range(len(inputs[l]))]
-        for k in range(num_kernels):
-            out_fmap = inputs[l+1][k]
+        in_channels = len(inputs[l])
+        out_channels = len(inputs[l+1])
+        new_grads = [np.zeros_like(inputs[l][i]) for i in range(in_channels)]
+        for out_k in range(out_channels):
+            out_fmap = inputs[l+1][out_k]
             act_fmap = relu(out_fmap)
-            dpool = maxpool_backward(next_grads[k], act_fmap, pool_size)
+            dpool = maxpool_backward(next_grads[out_k], act_fmap, pool_size)
             dact = derivrelu(act_fmap) * dpool
-            for m_idx in range(len(inputs[l])):
-                dinput = kernel_learn(kernels[l][m_idx][k], inputs[l][m_idx], dact)
-                new_grads[m_idx] += dinput
+            for in_k in range(in_channels):
+                dinput = kernel_learn(kernels[l][in_k][out_k], inputs[l][in_k], dact)
+                new_grads[in_k] += dinput
         next_grads = new_grads
+
+cache_batch = [] 
+dummy = np.zeros((image_size, image_size))
+output = forward_pass(dummy)
+final_maps = np.stack(output[-1])
+densein = final_maps.size
+weights = np.random.randn(len(labeldict), densein) * np.sqrt(2 / densein) * learning_rate # im tired, this is a bad way ik but its the only one i got rn, FIX LATER
+
 if(read_mode):
-    weights=np.load("weights.npy")
-    kernels=np.load("kernels.npy")
-    bias=np.load("bias.npy")
+    with open("weights.pickle", "rb") as f:
+        weights = pickle.load(f)
+    with open("kernels.pickle", "rb") as f:
+        kernels = pickle.load(f)    
     files = os.listdir(val_folder)
     for idx, file in enumerate(files):
         img = cv2.imread(os.path.join(val_folder, file), cv2.IMREAD_GRAYSCALE).astype(float) / 255.0
@@ -162,7 +177,7 @@ if(read_mode):
         input_layers = forward_pass(img)
         final_maps = np.stack(input_layers[-1])
         flat = final_maps.flatten()
-        logits = np.dot(weights, flat)# + bias
+        logits = np.dot(weights, flat)
         probs = softmax(logits)
         print(f"{probs} : {np.argmax(probs)} : {label} : {file}\n")
 
@@ -186,7 +201,6 @@ for epoch in range(epochnum): # huge mess, clean it up
         probs[label] -= 1
         dflat = np.dot(weights.T, probs)
         weights -= learning_rate * np.outer(probs, flat)
-        bias -= learning_rate * probs
         dfmap = dflat.reshape(final_maps.shape)
         backward_pass(input_layers, dfmap, img)
         if np.argmax(logits) != label:
@@ -199,11 +213,17 @@ for epoch in range(epochnum): # huge mess, clean it up
             print(f"progress: {idx}/{len(files)} | %{(idx)/len(files)*100}")
             sys.stdout.write("\033[u")
         if(100-np.sum(errors[-100:])<(100-(np.sum(errors)/(idx+1)*100)) and idx % 100):
-            #learning_rate*=0.99999
+            #learning_rate*=0.99999 if you want continous learning rate adjustment but really not needed that much
             0
         else:
             0
             #learning_rate*=1.001
+        if idx == 100:
+            with open('kernels1.pickle', 'wb') as handle:
+                pickle.dump(kernels, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        if idx == 200:
+            with open('kernel2.pickle', 'wb') as handle:
+                pickle.dump(kernels, handle, protocol=pickle.HIGHEST_PROTOCOL)
         if idx > len(files)-10:
             print(f"{np.argmax(logits)}  {label}")
     print("\n\n")
@@ -215,6 +235,8 @@ for epoch in range(epochnum): # huge mess, clean it up
     
     prev_epoch_acc = (np.sum(errors)/len(files))
 
-np.save('weights', weights)
-np.save('bias', bias)
-np.save('kernels', kernels)
+with open('kernels.pickle', 'wb') as handle:
+    pickle.dump(kernels, handle, protocol=pickle.HIGHEST_PROTOCOL)
+with open('weights.pickle', 'wb') as handle:
+    pickle.dump(weights, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
