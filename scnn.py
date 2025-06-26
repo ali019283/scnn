@@ -5,21 +5,36 @@ import sys
 
 labeldict = {chr(ord('A') + i): i for i in range(26)} # temp for handsign dataset
 # create a standart for keeping these kinds of data OUTSIDE of the source code
-learning_rate=0.01
+learning_rate=0.005
 num_kernels=8
-num_layers=2
+num_layers=1
+# num layer 2 
+# num kernel 2
+# or the value for exponantial growth with how many times it is exp grown
+# exp: +4 layer +6 kernel every 4 pools 2 times
+#init_kernel =  []
 kernel_size=3
 pool_size=2
 image_size=28
-epochnum=10
-
+epochnum=3
+val_folder = "dataset"
 input_folder = "dataset"
 label_folder = "label"
-
+read_mode=0
 kernels = [
-    [[np.random.randn(kernel_size, kernel_size) * np.sqrt(2 / (kernel_size * kernel_size)) 
+    [[np.random.randn(kernel_size, kernel_size) * np.sqrt(2 / (kernel_size * kernel_size))
       for _ in range(num_kernels)] for _ in range(num_kernels if l > 0 else 1)]
     for l in range(num_layers)
+]
+gam = [ 
+    [[np.full((kernel_size, kernel_size), 1) * np.sqrt(2 / (kernel_size * kernel_size)) 
+       for _ in range(num_kernels)] for _ in range(num_kernels if l > 0 else 1)]
+    for l in range (num_layers)
+]
+beta = [
+    [[np.full((kernel_size, kernel_size), 0) * np.sqrt(2 / (kernel_size * kernel_size)) 
+        for _ in range(num_kernels)] for _ in range(num_kernels if l > 0 else 1)]
+    for l in range (num_layers)
 ]
 
 def calc_output_size(image_size, num_layers, kernel_size, pool_size):
@@ -27,13 +42,14 @@ def calc_output_size(image_size, num_layers, kernel_size, pool_size):
     for _ in range(num_layers):
         size = (size - kernel_size + 1) // pool_size
     return size
-
+cache_batch = [] 
 finmap = calc_output_size(image_size, num_layers, kernel_size, pool_size)
 densein = num_kernels * (finmap*finmap)
-weights = np.random.randn(len(labeldict), densein) * np.sqrt(2 / densein)
-bias = np.zeros(len(labeldict))
+weights = np.random.randn(len(labeldict), densein) * np.sqrt(2 / densein) * learning_rate
+bias = np.zeros(len(labeldict)) * learning_rate
 
 def relu(x): return np.maximum(0, x)
+
 def derivrelu(x): return (x > 0).astype(float)
 
 def convolve(img, kernel): # def must be written in C
@@ -69,6 +85,17 @@ def maxpool_backward(dout, img, size): # not even the real backward? keep track 
                         break
     return dimg
 
+"""def batch_norm_dense(x, gam, beta, eps = 1e-5):
+    mean = nd.mean(x, axis = 0)
+    var = nd.mean((x-mean)**2, axis = 0)
+    out = (gam * ((x-mean) * (1.0 / nd.sqrt(var + eps, axis=0)))) + beta
+    cache = [gam, beta, var, np.zeros(x.shape)]
+    return out, cache
+
+def batch_norm_backw(x, gam, beta, eps = 1e-5):
+        
+
+"""
 def softmax(x):
     x = x - np.max(x)
     e = np.exp(x)
@@ -98,6 +125,7 @@ def forward_pass(img): # TODO: batchnorm for layers is NEEDED
             acc = None
             for m_idx, prev in enumerate(prev_maps):
                 conv = convolve(prev, kernels[l][m_idx][k])
+                #conv = batch_norm_dense(conv, gam, beta, 1e-e)
                 if acc is None:
                     acc=conv 
                 else: 
@@ -121,11 +149,30 @@ def backward_pass(inputs, doutput, original_img): #again, batchnorm
                 dinput = kernel_learn(kernels[l][m_idx][k], inputs[l][m_idx], dact)
                 new_grads[m_idx] += dinput
         next_grads = new_grads
+if(read_mode):
+    weights=np.load("weights.npy")
+    kernels=np.load("kernels.npy")
+    bias=np.load("bias.npy")
+    files = os.listdir(val_folder)
+    for idx, file in enumerate(files):
+        img = cv2.imread(os.path.join(val_folder, file), cv2.IMREAD_GRAYSCALE).astype(float) / 255.0
+        label_file = file.split(".")[0] + ".txt"
+        with open(os.path.join(label_folder, label_file)) as f:
+            label=labeldict[f.read().strip()]
+        input_layers = forward_pass(img)
+        final_maps = np.stack(input_layers[-1])
+        flat = final_maps.flatten()
+        logits = np.dot(weights, flat)# + bias
+        probs = softmax(logits)
+        print(f"{probs} : {np.argmax(probs)} : {label} : {file}\n")
 
 for epoch in range(epochnum): # huge mess, clean it up
-    errors = 0
+    if (epoch == 0):
+        prev_epoch_acc = 0
+    errors = []
     files = os.listdir(input_folder)
     for idx, file in enumerate(files):
+        #init simplifying kernel here
         img = cv2.imread(os.path.join(input_folder, file), cv2.IMREAD_GRAYSCALE).astype(float) / 255.0
         label_file = file.split(".")[0] + ".txt"
         with open(os.path.join(label_folder, label_file)) as f:
@@ -133,7 +180,7 @@ for epoch in range(epochnum): # huge mess, clean it up
         input_layers = forward_pass(img)
         final_maps = np.stack(input_layers[-1])
         flat = final_maps.flatten()
-        logits = np.dot(weights, flat) + bias
+        logits = np.dot(weights, flat)
         probs = softmax(logits)
         loss = losscalc(probs, label)
         probs[label] -= 1
@@ -143,19 +190,31 @@ for epoch in range(epochnum): # huge mess, clean it up
         dfmap = dflat.reshape(final_maps.shape)
         backward_pass(input_layers, dfmap, img)
         if np.argmax(logits) != label:
-            errors += 1
-        if idx:
+            errors.append(1)
+        else:
+            errors.append(0)
+        if idx and errors:
             sys.stdout.write("\033[s")
-            print(f"guess: {np.argmax(logits) == label} | acc: %{100 - (errors/(idx+1))*100} | loss: {loss}")
-            print(f"progress: {idx+1}/{len(files)} | %{(idx+1)/len(files)}")
+            print(f"guess: {np.argmax(logits) == label} | 100 acc: %{100-np.sum(errors[-100:])} | total acc: %{100 - (np.sum(errors)/(idx+1)*100)} | loss: {loss}")
+            print(f"progress: {idx}/{len(files)} | %{(idx)/len(files)*100}")
             sys.stdout.write("\033[u")
+        if(100-np.sum(errors[-100:])<(100-(np.sum(errors)/(idx+1)*100)) and idx % 100):
+            #learning_rate*=0.99999
+            0
+        else:
+            0
+            #learning_rate*=1.001
+        if idx > len(files)-10:
+            print(f"{np.argmax(logits)}  {label}")
     print("\n\n")
-    print(f"epoch {epoch+1} accuracy: %{100 - (errors / len(files)) * 100}\n")
+    print(f"epoch {epoch+1} accuracy: %{100 - (np.sum(errors) / len(files)) * 100}\n")
+    if(prev_epoch_acc > np.sum(errors)/len(files)):
+        learning_rate *=0.80
+    else:
+        learning_rate *=1.20
+    
+    prev_epoch_acc = (np.sum(errors)/len(files))
 
-np.savetxt('weights', weights, delimiter=',')
-np.savetxt('bias', bias, delimiter=',')
-with open("kernels", "w") as f:
-    for x in kernels:
-        for y in x:
-            for kern in y:
-                f.write(str(kern.tolist()) + "\n") # keep a standart for keeping?
+np.save('weights', weights)
+np.save('bias', bias)
+np.save('kernels', kernels)
