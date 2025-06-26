@@ -4,11 +4,11 @@ import numpy as np
 import sys
 import pickle
 
-labeldict = {chr(ord('A') + i): i for i in range(26)} # temp for handsign dataset
+labeldict = {"W":0, "O":1, "L":2, "Y":3, "A":4, "I":5, "U": 6}# temp for handsign dataset
 # create a standart for keeping these kinds of data OUTSIDE of the source code
-learning_rate=0.003
-num_kernels=4
-num_layers=2
+learning_rate=0.005
+num_kernels=8
+num_layers=1
 # num layer 2 
 # num kernel 2
 # or the value for exponantial growth with how many times it is exp grown
@@ -17,11 +17,11 @@ num_layers=2
 kernel_size=3
 pool_size=2
 image_size=28
-epochnum=3
+epochnum=5
 val_folder = "dataset"
 input_folder = "dataset"
 label_folder = "label"
-read_mode=0
+read_mode= 1
 kernels = []
 in_channels = 1
 for l in range(num_layers):
@@ -33,7 +33,9 @@ for l in range(num_layers):
     ])
     in_channels = out_channels
 
-"""gam = [ 
+"""
+cachebatc=[]
+gam = [ 
     [[np.full((kernel_size, kernel_size), 1) * np.sqrt(2 / (kernel_size * kernel_size)) 
        for _ in range(num_kernels)] for _ in range(num_kernels if l > 0 else 1)]
     for l in range (num_layers)
@@ -156,31 +158,38 @@ def backward_pass(inputs, doutput, original_img):
                 new_grads[in_k] += dinput
         next_grads = new_grads
 
-cache_batch = [] 
-dummy = np.zeros((image_size, image_size))
-output = forward_pass(dummy)
+dumdum = np.zeros((image_size, image_size))
+output = forward_pass(dumdum)
 final_maps = np.stack(output[-1])
 densein = final_maps.size
 weights = np.random.randn(len(labeldict), densein) * np.sqrt(2 / densein) * learning_rate # im tired, this is a bad way ik but its the only one i got rn, FIX LATER
+final_maps = 0
 
-if(read_mode):
-    with open("weights.pickle", "rb") as f:
-        weights = pickle.load(f)
-    with open("kernels.pickle", "rb") as f:
-        kernels = pickle.load(f)    
+if read_mode:
+    kernels = np.load("kernels.pickle", allow_pickle=True)
+    weights = np.load("weights.pickle", allow_pickle=True)
     files = os.listdir(val_folder)
+    errors=[]
     for idx, file in enumerate(files):
+        #init simplifying kernel here
         img = cv2.imread(os.path.join(val_folder, file), cv2.IMREAD_GRAYSCALE).astype(float) / 255.0
         label_file = file.split(".")[0] + ".txt"
         with open(os.path.join(label_folder, label_file)) as f:
-            label=labeldict[f.read().strip()]
+            label = labeldict[f.read().strip()]
         input_layers = forward_pass(img)
         final_maps = np.stack(input_layers[-1])
         flat = final_maps.flatten()
         logits = np.dot(weights, flat)
         probs = softmax(logits)
-        print(f"{probs} : {np.argmax(probs)} : {label} : {file}\n")
-
+        if idx and errors:
+            sys.stdout.write("\033[s")
+            print(f"guess: {np.argmax(logits) == label} | 100 acc: %{100-np.sum(errors[-100:])} | total acc: %{100 - (np.sum(errors)/(idx+1)*100)}")
+            print(f"progress: {idx}/{len(files)} | %{(idx)/len(files)*100}")
+            sys.stdout.write("\033[u")
+        if np.argmax(logits) != label:
+            errors.append(1)
+        else:
+            errors.append(0)
 for epoch in range(epochnum): # huge mess, clean it up
     if (epoch == 0):
         prev_epoch_acc = 0
@@ -218,12 +227,6 @@ for epoch in range(epochnum): # huge mess, clean it up
         else:
             0
             #learning_rate*=1.001
-        if idx == 100:
-            with open('kernels1.pickle', 'wb') as handle:
-                pickle.dump(kernels, handle, protocol=pickle.HIGHEST_PROTOCOL)
-        if idx == 200:
-            with open('kernel2.pickle', 'wb') as handle:
-                pickle.dump(kernels, handle, protocol=pickle.HIGHEST_PROTOCOL)
         if idx > len(files)-10:
             print(f"{np.argmax(logits)}  {label}")
     print("\n\n")
@@ -232,11 +235,14 @@ for epoch in range(epochnum): # huge mess, clean it up
         learning_rate *=0.80
     else:
         learning_rate *=1.20
+        with open('kernelsbest.pickle', 'wb') as handle:
+            pickle.dump(kernels, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        with open('weightsbest.pickle', 'wb') as handle:
+            pickle.dump(weights, handle, protocol=pickle.HIGHEST_PROTOCOL)
     
     prev_epoch_acc = (np.sum(errors)/len(files))
-
-with open('kernels.pickle', 'wb') as handle:
-    pickle.dump(kernels, handle, protocol=pickle.HIGHEST_PROTOCOL)
-with open('weights.pickle', 'wb') as handle:
-    pickle.dump(weights, handle, protocol=pickle.HIGHEST_PROTOCOL)
-
+if(read_mode!=1):
+    with open('kernelslast.pickle', 'wb') as handle:
+        pickle.dump(kernels, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    with open('weightslast.pickle', 'wb') as handle:
+        pickle.dump(weights, handle, protocol=pickle.HIGHEST_PROTOCOL)
